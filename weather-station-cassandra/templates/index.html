@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giám sát thời tiết IoT · Cassandra</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg:#f4f6f9; --card:#fff; --ink:#1c2433; --muted:#667085; --line:#e4e7ec;
+    --accent:#1d4ed8; --temp:#e4572e; --hum:#2e86ab; --pres:#4c9a2a; --bad:#d92d20; --ok:#12b76a; --warn:#f79009;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:linear-gradient(120deg,#0b1530,#16295a); color:#fff; padding:14px 24px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+  header h1 { margin:0; font-size:19px; font-weight:650; }
+  header small { color:#9fb0d0; display:block; font-weight:400; font-size:12.5px; }
+  .badges { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .badge { background:rgba(255,255,255,.12); border-radius:999px; padding:4px 12px; font-size:13px; white-space:nowrap; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#667085; margin-right:6px; }
+  .dot.live { background:var(--ok); animation:pulse 1.6s infinite; }
+  .dot.warn { background:var(--warn); }
+  @keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(18,183,106,.6);} 70% { box-shadow:0 0 0 8px rgba(18,183,106,0);} 100% { box-shadow:0 0 0 0 rgba(18,183,106,0);} }
+  main { max-width:1320px; margin:0 auto; padding:18px 24px 40px; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:end; margin-bottom:16px; }
+  .toolbar label { display:flex; flex-direction:column; font-size:12.5px; color:var(--muted); gap:3px; }
+  select, input { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; color:var(--ink); }
+  button:hover { background:#f2f4f7; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary:hover { background:#1a43b8; }
+  button.danger { color:var(--bad); }
+  .grow { flex:1; }
+  .st { font-size:12.5px; white-space:nowrap; }
+  .st.on { color:#12805c; } .st.off { color:#b54708; } .st.none { color:#98a2b3; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:14px; margin-bottom:16px; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px 12px; border-top:4px solid var(--c); }
+  .kpi .top { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:13px; }
+  .kpi .val { font-size:36px; font-weight:700; line-height:1.15; margin:2px 0 6px; }
+  .kpi .val span { font-size:15px; font-weight:500; color:var(--muted); margin-left:3px; }
+  .kpi .sub { font-size:12.5px; color:var(--muted); margin-top:6px; }
+  .kpi.alert { background:#fff4f2; border-color:#fecdca; }
+  .kpi.alert .val { color:var(--bad); }
+  .trend { font-size:12.5px; font-weight:600; padding:1px 8px; border-radius:999px; background:#f2f4f7; color:#475467; }
+  .trend.up { background:#fef3f2; color:#b42318; }
+  .trend.down { background:#eff8ff; color:#175cd3; }
+  .gauge { position:relative; height:8px; border-radius:99px; background:linear-gradient(90deg,#f04438 0,#fdb022 12%,#12b76a 32%,#12b76a 68%,#fdb022 88%,#f04438 100%); }
+  .gmark { position:absolute; top:-4px; width:4px; height:16px; background:#101828; border-radius:2px; transform:translateX(-50%); border:1px solid #fff; }
+  .grange { display:flex; justify-content:space-between; font-size:11.5px; color:var(--muted); margin-top:3px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(400px,1fr)); gap:14px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+  .card h2 { margin:0 0 8px; font-size:15px; display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .card h2 small { font-weight:400; color:var(--muted); font-size:12.5px; }
+  .chartbox { position:relative; height:250px; }
+  .cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(460px,1fr)); gap:14px; margin-bottom:16px; }
+  #map { height:380px; border-radius:10px; z-index:0; }
+  .mk { color:#fff; font-weight:700; font-size:12.5px; border-radius:999px; padding:3px 9px; text-align:center; border:2px solid #fff; box-shadow:0 2px 6px rgba(16,24,40,.35); white-space:nowrap; }
+  .mk.sel { outline:3px solid #1d4ed8; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th, td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
+  th { color:var(--muted); font-weight:600; }
+  tbody tr.sel { background:#eef4ff; }
+  tbody tr.click { cursor:pointer; }
+  tbody tr.click:hover { background:#f5f8ff; }
+  .chip { display:inline-block; min-width:48px; text-align:center; padding:1px 8px; border-radius:999px; color:#fff; font-weight:600; font-size:12.5px; }
+  .hint { color:var(--muted); font-size:12.5px; margin-top:8px; }
+  dialog { border:none; border-radius:14px; padding:20px 22px; width:min(460px,92vw); box-shadow:0 20px 60px rgba(16,24,40,.3); }
+  dialog::backdrop { background:rgba(15,27,51,.45); }
+  dialog h3 { margin:0 0 12px; }
+  .fld { display:flex; flex-direction:column; gap:3px; margin-bottom:10px; font-size:13px; color:var(--muted); }
+  .fld input { color:var(--ink); }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; align-items:end; }
+  .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+  #toast { position:fixed; right:18px; bottom:18px; background:#101828; color:#fff; padding:10px 16px; border-radius:10px; opacity:0; transform:translateY(8px); transition:.25s; pointer-events:none; max-width:420px; z-index:5000; }
+  #toast.show { opacity:1; transform:none; }
+  #toast.err { background:var(--bad); }
+  #dlgNew { width:min(640px,94vw); }
+  #pickmap { height:270px; border-radius:10px; margin:8px 0 4px; z-index:0; }
+  .srch { display:flex; gap:6px; }
+  .srch input { flex:1; }
+  #sugg { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+  .sg { text-align:left; font-size:12.5px; padding:6px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hệ thống giám sát thời tiết IoT<small>Chuỗi thời gian trên Apache Cassandra (Astra DB) · môn NoSQL</small></h1>
+  <div class="badges">
+    <span class="badge"><span class="dot" id="dot"></span><span id="liveTxt">Đang tải…</span> · <span id="age">–</span></span>
+    <span class="badge">Truy vấn: <b id="qms">–</b> ms</span>
+    <span class="badge">Bản ghi (trạm + khoảng đã chọn): <b id="cnt">–</b></span>
+  </div>
+</header>
+
+<main>
+  <div class="toolbar">
+    <label>Trạm quan trắc
+      <select id="station" style="min-width:230px"></select>
+    </label>
+    <label>Khoảng thời gian
+      <select id="range">
+        <option value="30">30 phút qua</option>
+        <option value="60">1 giờ qua</option>
+        <option value="120" selected>2 giờ qua</option>
+        <option value="360">6 giờ qua</option>
+        <option value="720">12 giờ qua</option>
+        <option value="1440">24 giờ qua</option>
+      </select>
+    </label>
+    <label>Tự làm mới
+      <select id="auto">
+        <option value="2000" selected>Mỗi 2 giây</option>
+        <option value="5000">Mỗi 5 giây</option>
+        <option value="0">Tắt</option>
+      </select>
+    </label>
+    <label style="flex-direction:row;align-items:center;gap:6px;padding-bottom:9px;color:var(--ink);font-size:13.5px" title="Gộp các điểm dày thành điểm trung bình theo khoảng thời gian cho dễ nhìn">
+      <input type="checkbox" id="smooth" checked> Gộp trung bình theo khoảng
+    </label>
+    <button id="btnPause" title="Tạm dừng / tiếp tục cập nhật">⏸ Tạm dừng</button>
+    <div class="grow"></div>
+    <button id="btnNew" class="primary">+ Trạm mới</button>
+    <button id="btnLog">Ghi log thủ công</button>
+    <button id="btnCfg">Cấu hình cảm biến</button>
+    <button id="btnDel" class="danger">Xóa trạm</button>
+  </div>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="charts">
+    <div class="card"><h2>Nhiệt độ (°C)<small id="s_temperature"></small></h2><div class="chartbox"><canvas id="c_temperature"></canvas></div></div>
+    <div class="card"><h2>Độ ẩm (%)<small id="s_humidity"></small></h2><div class="chartbox"><canvas id="c_humidity"></canvas></div></div>
+    <div class="card"><h2>Áp suất (hPa)<small id="s_pressure"></small></h2><div class="chartbox"><canvas id="c_pressure"></canvas></div></div>
+    <div class="card"><h2>Thời gian truy vấn Cassandra (ms)<small id="s_latency"></small></h2><div class="chartbox"><canvas id="c_latency"></canvas></div>
+      <div class="hint">Mỗi điểm là một lần làm mới dashboard (đã gồm độ trễ mạng tới Astra).</div></div>
+  </section>
+
+  <section class="cols">
+    <div class="card" id="mapCard">
+      <h2>Bản đồ các trạm<small>Màu theo nhiệt độ hiện tại · bấm để chọn trạm</small></h2>
+      <div id="map"></div>
+    </div>
+    <div class="card">
+      <h2>Tổng quan các trạm<small>Bản ghi mới nhất của mỗi trạm</small></h2>
+      <table>
+        <thead><tr><th>Mã</th><th>Trạm</th><th>°C</th><th>%</th><th>hPa</th><th>Trạng thái</th></tr></thead>
+        <tbody id="tblOverview"></tbody>
+      </table>
+      <div class="hint">Bấm vào một dòng để chuyển sang trạm đó.</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>10 bản ghi mới nhất của trạm</h2>
+    <table>
+      <thead><tr><th>Thời gian</th><th></th><th>Nhiệt độ</th><th>Độ ẩm</th><th>Áp suất</th></tr></thead>
+      <tbody id="tblLatest"></tbody>
+    </table>
+    <div class="hint">Đọc từ đầu partition (station_id, log_date) – bản ghi mới nhất nằm đầu nhờ CLUSTERING ORDER BY (ts DESC).</div>
+  </section>
+</main>
+
+<!-- Trạm mới -->
+<dialog id="dlgNew"><form method="dialog" id="fNew">
+  <h3>Tạo trạm quan trắc mới</h3>
+  <div class="row2">
+    <div class="fld">Mã trạm<input name="station_id" placeholder="ST11" required></div>
+    <div class="fld">Tên trạm<input name="name" placeholder="Trạm Quy Nhơn" required></div>
+  </div>
+  <div id="pickWrap">
+    <div class="srch"><input id="citySearch" placeholder="Tìm thành phố, ví dụ: Quy Nhơn" autocomplete="off"><button type="button" id="btnSearch">Tìm</button></div>
+    <div id="sugg"></div>
+    <div id="pickmap"></div>
+    <div class="hint">Bấm lên bản đồ (hoặc kéo ghim) để chọn vị trí trạm, tọa độ tự điền bên dưới. Chấm xám là các trạm đã có.</div>
+  </div>
+  <div class="fld" style="margin-top:10px">Địa điểm<input name="location" placeholder="Bình Định"></div>
+  <div class="row2">
+    <div class="fld">Vĩ độ<input name="latitude" type="number" step="any" placeholder="Chọn trên bản đồ" required></div>
+    <div class="fld">Kinh độ<input name="longitude" type="number" step="any" placeholder="Chọn trên bản đồ" required></div>
+  </div>
+  <div class="actions"><button type="button" data-close>Hủy</button><button class="primary" type="submit">Tạo trạm</button></div>
+</form></dialog>
+
+<!-- Ghi log -->
+<dialog id="dlgLog"><form method="dialog" id="fLog">
+  <h3>Ghi nhận log đo</h3>
+  <div class="hint" style="margin:-6px 0 12px">Ghi một bản ghi tại thời điểm hiện tại cho trạm đang chọn.</div>
+  <div class="row3">
+    <div class="fld">Nhiệt độ (°C)<input name="temperature" type="number" step="any" required></div>
+    <div class="fld">Độ ẩm (%)<input name="humidity" type="number" step="any" required></div>
+    <div class="fld">Áp suất (hPa)<input name="pressure" type="number" step="any" required></div>
+  </div>
+  <div class="actions"><button type="button" data-close>Hủy</button><button class="primary" type="submit">Ghi log</button></div>
+</form></dialog>
+
+<!-- Cấu hình cảm biến -->
+<dialog id="dlgCfg"><form method="dialog" id="fCfg">
+  <h3>Cấu hình cảm biến</h3>
+  <div id="cfgBody"></div>
+  <div class="actions"><button type="button" data-close>Hủy</button><button class="primary" type="submit">Lưu cấu hình</button></div>
+</form></dialog>
+
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const METRICS = [
+  { key:'temperature', label:'Nhiệt độ', unit:'°C',  color:'#e4572e', dec:1 },
+  { key:'humidity',    label:'Độ ẩm',    unit:'%',   color:'#2e86ab', dec:1 },
+  { key:'pressure',    label:'Áp suất',  unit:'hPa', color:'#4c9a2a', dec:1 },
+];
+let charts = {}, latChart = null, sensors = {}, timer = null, busy = false, paused = false;
+let stations = [], overview = [], lastTs = null, qHist = [], map = null, markers = {}, mapFitted = false;
+
+// Trục thời gian thật (khoảng trống giữa dữ liệu mẫu 5 phút và dữ liệu simulator 2 giây hiện đúng tỉ lệ)
+const hasTime = (() => { try { new Chart._adapters._date({}).formats(); return true; } catch (e) { return false; } })();
+
+async function api(url, opts = {}) {
+  if (opts.body && typeof opts.body !== 'string') {
+    opts = { ...opts, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opts.body) };
+  }
+  const r = await fetch(url, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function toast(msg, err = false) {
+  const t = $('#toast'); t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.className = '', 3200);
+}
+const fmtTime = v => new Date(v).toLocaleTimeString('vi-VN', { hour12: false });
+const fmtFull = v => new Date(v).toLocaleString('vi-VN', { hour12: false });
+const cur = () => $('#station').value;
+function ago(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return s + ' giây trước';
+  if (s < 3600) return Math.floor(s / 60) + ' phút trước';
+  if (s < 86400) return Math.floor(s / 3600) + ' giờ trước';
+  return Math.floor(s / 86400) + ' ngày trước';
+}
+function tempColor(t) {
+  if (t == null) return '#98a2b3';
+  if (t < 18) return '#2e90fa';
+  if (t < 24) return '#12b76a';
+  if (t < 30) return '#f79009';
+  return '#f04438';
+}
+function downsample(pts, max) {
+  if (pts.length <= max) return pts;
+  const step = Math.ceil(pts.length / max);
+  const out = pts.filter((_, i) => i % step === 0);
+  if (out[out.length - 1] !== pts[pts.length - 1]) out.push(pts[pts.length - 1]);
+  return out;
+}
+
+/* ---------- biểu đồ ---------- */
+function lineDs(color, dash) {
+  return { data: [], borderColor: color, backgroundColor: 'transparent', borderWidth: 1.2, borderDash: dash,
+           pointRadius: 0, pointHoverRadius: 0, fill: false, tension: 0 };
+}
+function initCharts() {
+  const xScale = hasTime
+    ? { type: 'time', time: { tooltipFormat: 'HH:mm:ss dd/MM', displayFormats: { second: 'HH:mm:ss', minute: 'HH:mm', hour: 'HH:mm', day: 'dd/MM' } },
+        ticks: { maxTicksLimit: 7, maxRotation: 0, autoSkip: true }, grid: { display: false } }
+    : { ticks: { maxTicksLimit: 7, maxRotation: 0 }, grid: { display: false } };
+  METRICS.forEach(m => {
+    charts[m.key] = new Chart($('#c_' + m.key), {
+      type: 'line',
+      data: { labels: [], datasets: [
+        { data: [], borderColor: m.color, backgroundColor: m.color + '22', fill: true, tension: 0, cubicInterpolationMode: 'monotone', spanGaps: false,
+          pointRadius: 0, pointHoverRadius: 4, borderWidth: 2 },
+        lineDs('#f79009', [6, 4]), lineDs('#f04438', [6, 4]) ] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, parsing: true,
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+        plugins: { legend: { display: false },
+                   tooltip: { filter: it => it.datasetIndex === 0,
+                              callbacks: { label: c => `${m.label}: ${c.parsed.y.toFixed(2)} ${m.unit}` } } },
+        scales: { x: xScale, y: { grace: '12%', ticks: { callback: v => (+Number(v).toFixed(2)) + ' ' + m.unit } } }
+      }
+    });
+  });
+  latChart = new Chart($('#c_latency'), {
+    type: 'line',
+    data: { labels: [], datasets: [{ data: [], borderColor: '#7a5af8', backgroundColor: '#7a5af822', fill: true,
+                                     tension: .3, pointRadius: 2, borderWidth: 2 }] },
+    options: { responsive: true, maintainAspectRatio: false, animation: false,
+               plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => c.parsed.y.toFixed(1) + ' ms' } } },
+               scales: { x: { display: false }, y: { beginAtZero: true, ticks: { callback: v => (+Number(v).toFixed(0)) + ' ms' } } } }
+  });
+}
+// Ngắt đường khi hai điểm cách nhau quá 12 phút (không có dữ liệu) thay vì nối thẳng qua khoảng trống
+const GAP_MS = 12 * 60 * 1000;
+const BUCKETS = [1, 5, 10, 15, 30, 60, 120, 300].map(s => s * 1000);
+function bucketMsFor(rangeMin) {
+  const want = rangeMin * 60000 / 150;                       // tối đa ~150 điểm trên biểu đồ
+  return BUCKETS.find(b => b >= want) || BUCKETS[BUCKETS.length - 1];
+}
+// Dữ liệu từ Cassandra đã theo thứ tự thời gian nên chỉ gộp tuần tự (không cần sort ở ứng dụng)
+function bucketize(rows, key, b) {
+  const map = new Map();
+  rows.forEach(r => {
+    const k = Math.floor(Date.parse(r.ts) / b), o = map.get(k) || { s: 0, n: 0, t0: k * b };
+    o.s += r[key]; o.n++; map.set(k, o);
+  });
+  return [...map.values()].map(o => ({ x: o.t0 + b / 2, y: o.s / o.n }));
+}
+const fmtBucket = b => b < 60000 ? (b / 1000) + ' giây' : (b / 60000) + ' phút';
+function withGaps(pts, gap) {
+  const out = [];
+  pts.forEach((p, i) => {
+    if (i && p.x - pts[i - 1].x > gap) out.push({ x: pts[i - 1].x + 1, y: null });
+    out.push(p);
+  });
+  return out;
+}
+function updateChart(m, rows) {
+  const c = charts[m.key];
+  const useB = $('#smooth').checked && rows.length > 150;
+  const b = useB ? bucketMsFor(+$('#range').value) : 0;
+  const real = useB ? bucketize(rows, m.key, b)
+                    : downsample(rows.map(r => ({ x: Date.parse(r.ts), y: r[m.key] })), 600);
+  const ys = real.map(p => p.y);
+  const lo = ys.length ? Math.min(...ys) : 0, hi = ys.length ? Math.max(...ys) : 0;
+  const span = Math.max(hi - lo, 0.5), cfg = sensors[m.key];
+  const near = v => v != null && v > lo - span && v < hi + span;   // chỉ vẽ ngưỡng khi gần vùng dữ liệu
+  if (hasTime) {
+    const x0 = real.length ? real[0].x : 0, x1 = real.length ? real[real.length - 1].x : 0;
+    const line = v => (cfg && real.length > 1 && near(v)) ? [{ x: x0, y: v }, { x: x1, y: v }] : [];
+    c.data.datasets[0].data = withGaps(real, Math.max(GAP_MS, b * 5));
+    c.data.datasets[1].data = cfg ? line(cfg.min_value) : [];
+    c.data.datasets[2].data = cfg ? line(cfg.max_value) : [];
+  } else {
+    c.data.labels = real.map(p => fmtTime(p.x));
+    c.data.datasets[0].data = ys;
+    c.data.datasets[1].data = cfg && near(cfg.min_value) ? ys.map(() => cfg.min_value) : [];
+    c.data.datasets[2].data = cfg && near(cfg.max_value) ? ys.map(() => cfg.max_value) : [];
+  }
+  c.update('none');
+  const st = rows.length ? `${rows.length} bản ghi${useB ? ' · TB mỗi ' + fmtBucket(b) : ''} · nét đứt = ngưỡng` : '';
+  $('#s_' + m.key).textContent = st;
+}
+function updateLatency(ms) {
+  qHist.push(ms); if (qHist.length > 60) qHist.shift();
+  latChart.data.labels = qHist.map((_, i) => i + 1);
+  latChart.data.datasets[0].data = qHist.slice();
+  latChart.update('none');
+  const avg = qHist.reduce((a, b) => a + b, 0) / qHist.length;
+  $('#s_latency').textContent = `mới nhất ${ms.toFixed(0)} ms · TB ${avg.toFixed(0)} ms · min ${Math.min(...qHist).toFixed(0)} · max ${Math.max(...qHist).toFixed(0)}`;
+}
+
+/* ---------- dữ liệu ---------- */
+async function loadStations(keep) {
+  stations = await api('/api/stations');
+  const sel = $('#station');
+  sel.innerHTML = stations.map(s => `<option value="${s.station_id}">${s.station_id} – ${s.name}</option>`).join('');
+  if (keep && stations.some(s => s.station_id === keep)) sel.value = keep;
+}
+async function loadSensors() {
+  if (!cur()) return;
+  const list = await api(`/api/stations/${cur()}/sensors`);
+  sensors = Object.fromEntries(list.map(s => [s.sensor_type, s]));
+}
+async function refresh() {
+  if (busy || !cur()) return;
+  busy = true;
+  try {
+    const d = await api(`/api/logs?station_id=${cur()}&minutes=${$('#range').value}`);
+    METRICS.forEach(m => updateChart(m, d.rows));
+    renderKpis(d);
+    updateLatency(d.query_ms);
+    $('#qms').textContent = d.query_ms;
+    $('#cnt').textContent = d.count;
+    lastTs = d.rows.length ? Date.parse(d.rows[d.rows.length - 1].ts) : null;
+    tickAge();
+    const latest = d.rows.slice(-10).reverse();
+    $('#tblLatest').innerHTML = latest.map(r => `<tr><td>${fmtFull(r.ts)}</td><td></td>
+      <td>${r.temperature.toFixed(1)} °C</td><td>${r.humidity.toFixed(1)} %</td><td>${r.pressure.toFixed(1)} hPa</td></tr>`).join('')
+      || '<tr><td colspan="5" style="text-align:center;color:#667085">Trạm chưa có dữ liệu trong khoảng này. Chạy simulator.py (tự ghi cho cả trạm mới) hoặc bấm "Ghi log thủ công".</td></tr>';
+  } catch (e) {
+    $('#dot').className = 'dot'; $('#liveTxt').textContent = 'Lỗi kết nối';
+    toast(e.message, true);
+  } finally { busy = false; }
+}
+function tickAge() {
+  if (!lastTs) { $('#dot').className = 'dot'; $('#liveTxt').textContent = 'Chưa có dữ liệu'; $('#age').textContent = '–'; return; }
+  const s = (Date.now() - lastTs) / 1000;
+  $('#dot').className = 'dot ' + (s < 30 ? 'live' : s < 600 ? 'warn' : '');
+  $('#liveTxt').textContent = s < 30 ? 'Đang nhận dữ liệu' : 'Dữ liệu mới nhất';
+  $('#age').textContent = ago(lastTs);
+}
+function renderKpis(d) {
+  const n = d.rows.length, last = d.rows[n - 1], prev = d.rows[n - 2];
+  $('#kpis').innerHTML = METRICS.map(m => {
+    const v = last ? last[m.key] : null, st = d.stats[m.key], cfg = sensors[m.key];
+    const out = v != null && cfg && (v < cfg.min_value || v > cfg.max_value);
+    let trend = '';
+    if (v != null && prev) {
+      const df = v - prev[m.key], cls = Math.abs(df) < 0.005 ? 'flat' : (df > 0 ? 'up' : 'down');
+      trend = `<span class="trend ${cls}">${cls === 'flat' ? '■' : df > 0 ? '▲' : '▼'} ${df > 0 ? '+' : ''}${df.toFixed(2)}</span>`;
+    }
+    let gauge = '';
+    if (v != null && cfg && cfg.max_value > cfg.min_value) {
+      const pct = Math.max(0, Math.min(100, (v - cfg.min_value) / (cfg.max_value - cfg.min_value) * 100));
+      gauge = `<div class="gauge"><div class="gmark" style="left:${pct}%"></div></div>
+        <div class="grange"><span>${cfg.min_value}</span><span>Ngưỡng an toàn</span><span>${cfg.max_value}</span></div>`;
+    }
+    const sub = st ? `Min ${st.min.toFixed(1)} · TB ${st.avg.toFixed(1)} · Max ${st.max.toFixed(1)}` : 'Chưa có dữ liệu';
+    return `<div class="kpi ${out ? 'alert' : ''}" style="--c:${m.color}">
+      <div class="top"><span>${m.label}${out ? ' · ⚠ vượt ngưỡng' : ''}</span>${trend}</div>
+      <div class="val">${v != null ? v.toFixed(m.dec) : '–'}<span>${m.unit}</span></div>
+      ${gauge}<div class="sub">${sub}</div></div>`;
+  }).join('');
+}
+
+/* ---------- tổng quan + bản đồ ---------- */
+async function loadOverview() {
+  try { overview = await api('/api/overview'); renderOverview(); renderMap(); } catch (e) { /* thử lại lần sau */ }
+}
+/* Trạng thái trạm theo thời điểm nhận log cuối: hoạt động / mất kết nối / chưa có dữ liệu */
+const ONLINE_SEC = 120;
+function statusOf(l) {
+  if (!l) return '<span class="st none">○ Chưa có dữ liệu</span>';
+  const age = (Date.now() - Date.parse(l.ts)) / 1000;
+  const t = ago(Date.parse(l.ts));
+  return age <= ONLINE_SEC
+    ? `<span class="st on" title="Log cuối ${t}">● Hoạt động</span>`
+    : `<span class="st off" title="Log cuối ${t}">● Mất kết nối · ${t}</span>`;
+}
+function renderOverview() {
+  $('#tblOverview').innerHTML = overview.map(s => {
+    const l = s.latest;
+    return `<tr class="click ${s.station_id === cur() ? 'sel' : ''}" data-id="${s.station_id}">
+      <td>${s.station_id}</td><td>${s.name}</td>
+      <td>${l ? `<span class="chip" style="background:${tempColor(l.temperature)}">${l.temperature.toFixed(1)}</span>` : '–'}</td>
+      <td>${l ? l.humidity.toFixed(1) : '–'}</td><td>${l ? l.pressure.toFixed(0) : '–'}</td>
+      <td>${statusOf(l)}</td></tr>`;
+  }).join('');
+}
+function initMap() {
+  if (typeof L === 'undefined') { $('#mapCard').style.display = 'none'; return; }
+  map = L.map('map', { scrollWheelZoom: false }).setView([15.8, 107], 5);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(map);
+  setTimeout(() => map.invalidateSize(), 300);
+}
+function renderMap() {
+  if (!map) return;
+  const pts = [];
+  overview.forEach(s => {
+    if (s.latitude == null || s.longitude == null) return;
+    const l = s.latest, t = l ? l.temperature : null;
+    const html = `<div class="mk ${s.station_id === cur() ? 'sel' : ''}" style="background:${tempColor(t)}">${t != null ? t.toFixed(1) + '°' : '–'}</div>`;
+    const tip = `<b>${s.station_id} · ${s.name}</b><br>` + (l ? `${l.temperature.toFixed(1)} °C · ${l.humidity.toFixed(1)} % · ${l.pressure.toFixed(0)} hPa` : 'Chưa có dữ liệu');
+    const icon = L.divIcon({ className: '', html, iconSize: [50, 28], iconAnchor: [25, 14] });
+    if (markers[s.station_id]) { markers[s.station_id].setIcon(icon).setTooltipContent(tip); }
+    else {
+      markers[s.station_id] = L.marker([s.latitude, s.longitude], { icon }).addTo(map)
+        .bindTooltip(tip, { direction: 'top', offset: [0, -12] })
+        .on('click', () => selectStation(s.station_id));
+    }
+    pts.push([s.latitude, s.longitude]);
+  });
+  if (!mapFitted && pts.length) { map.fitBounds(L.latLngBounds(pts).pad(0.25)); mapFitted = true; }
+}
+function selectStation(id) { $('#station').value = id; switchStation(); }
+
+/* ---------- điều khiển ---------- */
+function schedule() {
+  clearInterval(timer);
+  const ms = +$('#auto').value;
+  if (ms && !paused) timer = setInterval(refresh, ms);
+}
+async function switchStation() { await loadSensors(); await refresh(); renderOverview(); renderMap(); }
+
+$('#station').onchange = switchStation;
+$('#range').onchange = refresh;
+$('#smooth').onchange = refresh;
+$('#auto').onchange = schedule;
+$('#btnPause').onclick = () => {
+  paused = !paused;
+  $('#btnPause').textContent = paused ? '▶ Tiếp tục' : '⏸ Tạm dừng';
+  schedule();
+  if (!paused) refresh();
+};
+$('#tblOverview').onclick = e => {
+  const tr = e.target.closest('tr[data-id]'); if (!tr) return;
+  selectStation(tr.dataset.id);
+};
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => b.closest('dialog').close());
+
+/* Trạm mới: chọn vị trí trên bản đồ */
+let pickMap = null, pickMarker = null, pickLayer = null;
+const fld = n => document.querySelector('#fNew [name="' + n + '"]');
+['name', 'location'].forEach(n => fld(n).addEventListener('input', e => { e.target.dataset.auto = '0'; }));
+function autoFill(input, value) {
+  if (!value) return;
+  if (!input.value || input.dataset.auto === '1') { input.value = value; input.dataset.auto = '1'; }
+}
+function setPick(lat, lon, zoomTo) {
+  fld('latitude').value = (+lat).toFixed(5);
+  fld('longitude').value = (+lon).toFixed(5);
+  if (!pickMap) return;
+  if (!pickMarker) {
+    pickMarker = L.marker([lat, lon], { draggable: true }).addTo(pickMap);
+    pickMarker.on('dragend', () => { const p = pickMarker.getLatLng(); setPick(p.lat, p.lng); reverseGeo(p.lat, p.lng); });
+  } else pickMarker.setLatLng([lat, lon]);
+  if (zoomTo) pickMap.setView([lat, lon], Math.max(pickMap.getZoom(), 10));
+}
+async function reverseGeo(lat, lon) {
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&accept-language=vi&lat=${lat}&lon=${lon}`);
+    const a = (await r.json()).address || {};
+    const strip = s => (s || '').replace(/^(Thành phố|Tỉnh|Thị xã|Huyện)\s+/i, '');
+    const place = strip(a.city || a.town || a.municipality || a.county || a.state);
+    autoFill(fld('location'), strip(a.state || a.city));
+    autoFill(fld('name'), place ? 'Trạm ' + place : '');
+  } catch (e) { /* không có mạng: nhập tay */ }
+}
+function initPick() {
+  if (pickMap) return;
+  if (typeof L === 'undefined') { $('#pickWrap').style.display = 'none'; return; }
+  pickMap = L.map('pickmap').setView([15.8, 107], 5);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(pickMap);
+  pickLayer = L.layerGroup().addTo(pickMap);
+  pickMap.on('click', e => { setPick(e.latlng.lat, e.latlng.lng); reverseGeo(e.latlng.lat, e.latlng.lng); });
+}
+async function searchCity() {
+  const q = $('#citySearch').value.trim(); if (!q) return;
+  const box = $('#sugg'); box.innerHTML = '<div class="hint">Đang tìm…</div>';
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=vn&accept-language=vi&q=${encodeURIComponent(q)}`);
+    const list = await r.json();
+    if (!list.length) { box.innerHTML = '<div class="hint">Không tìm thấy, hãy thử tên khác hoặc bấm trực tiếp lên bản đồ.</div>'; return; }
+    box.innerHTML = list.map((it, i) => `<button type="button" class="sg" data-i="${i}">${it.display_name}</button>`).join('');
+    box.onclick = ev => {
+      const b = ev.target.closest('.sg'); if (!b) return;
+      const it = list[+b.dataset.i], lat = +it.lat, lon = +it.lon;
+      setPick(lat, lon, true);
+      if (pickMap) pickMap.setView([lat, lon], 11);
+      reverseGeo(lat, lon);
+      box.innerHTML = '';
+    };
+  } catch (e) { box.innerHTML = '<div class="hint">Không tìm được (kiểm tra mạng). Bạn có thể bấm trực tiếp lên bản đồ.</div>'; }
+}
+$('#btnSearch').onclick = searchCity;
+$('#citySearch').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); searchCity(); } });
+
+$('#btnNew').onclick = () => {
+  $('#fNew').reset();
+  ['name', 'location'].forEach(n => delete fld(n).dataset.auto);
+  $('#citySearch').value = ''; $('#sugg').innerHTML = '';
+  const nums = stations.map(s => /^ST(\d+)$/i.exec(s.station_id)).filter(Boolean).map(m => +m[1]);
+  fld('station_id').value = 'ST' + String((nums.length ? Math.max(...nums) : 0) + 1).padStart(2, '0');
+  $('#dlgNew').showModal();
+  initPick();
+  if (pickMap) {
+    if (pickMarker) { pickMap.removeLayer(pickMarker); pickMarker = null; }
+    pickLayer.clearLayers();
+    stations.filter(s => s.latitude != null && s.longitude != null).forEach(s =>
+      L.circleMarker([s.latitude, s.longitude], { radius: 5, color: '#475467', weight: 1, fillColor: '#98a2b3', fillOpacity: .9 })
+        .bindTooltip(`${s.station_id} · ${s.name}`).addTo(pickLayer));
+    setTimeout(() => { pickMap.invalidateSize(); pickMap.setView([15.8, 107], 5); }, 200);
+  }
+};
+$('#fNew').onsubmit = async e => {
+  e.preventDefault();
+  const body = Object.fromEntries(new FormData(e.target));
+  try {
+    const st = await api('/api/stations', { method: 'POST', body });
+    $('#dlgNew').close();
+    toast('Đã tạo trạm ' + st.station_id);
+    await loadStations(st.station_id); await switchStation(); loadOverview();
+  } catch (err) { toast(err.message, true); }
+};
+/* Ghi log */
+$('#btnLog').onclick = () => { $('#fLog').reset(); $('#dlgLog').showModal(); };
+$('#fLog').onsubmit = async e => {
+  const body = { ...Object.fromEntries(new FormData(e.target)), station_id: cur() };
+  try { await api('/api/logs', { method: 'POST', body }); toast('Đã ghi log'); refresh(); loadOverview(); }
+  catch (err) { toast(err.message, true); }
+};
+/* Cấu hình cảm biến */
+$('#btnCfg').onclick = async () => {
+  await loadSensors();
+  $('#cfgBody').innerHTML = METRICS.map(m => {
+    const c = sensors[m.key] || { min_value: '', max_value: '', interval_sec: 60, enabled: true };
+    return `<fieldset style="border:1px solid #e4e7ec;border-radius:10px;margin:0 0 10px;padding:8px 12px">
+      <legend style="color:${m.color};font-weight:600">${m.label} (${m.unit})</legend>
+      <div class="row3">
+        <div class="fld">Ngưỡng dưới<input data-k="${m.key}" data-f="min_value" type="number" step="any" value="${c.min_value}" required></div>
+        <div class="fld">Ngưỡng trên<input data-k="${m.key}" data-f="max_value" type="number" step="any" value="${c.max_value}" required></div>
+        <div class="fld">Chu kỳ (giây)<input data-k="${m.key}" data-f="interval_sec" type="number" min="1" value="${c.interval_sec}" required></div>
+      </div>
+      <label style="font-size:13px"><input data-k="${m.key}" data-f="enabled" type="checkbox" ${c.enabled ? 'checked' : ''}> Đang bật</label>
+    </fieldset>`;
+  }).join('');
+  $('#dlgCfg').showModal();
+};
+$('#fCfg').onsubmit = async e => {
+  try {
+    for (const m of METRICS) {
+      const g = f => document.querySelector(`[data-k="${m.key}"][data-f="${f}"]`);
+      await api(`/api/stations/${cur()}/sensors/${m.key}`, { method: 'PUT', body: {
+        min_value: g('min_value').value, max_value: g('max_value').value,
+        interval_sec: g('interval_sec').value, enabled: g('enabled').checked, unit: m.unit } });
+    }
+    toast('Đã lưu cấu hình cảm biến'); await loadSensors(); refresh();
+  } catch (err) { toast(err.message, true); }
+};
+/* Xóa trạm */
+$('#btnDel').onclick = async () => {
+  const id = cur(); if (!id) return;
+  if (!confirm(`Xóa trạm ${id} cùng cấu hình và log đo?`)) return;
+  try {
+    await api('/api/stations/' + id, { method: 'DELETE' });
+    toast('Đã xóa trạm ' + id);
+    if (markers[id] && map) { map.removeLayer(markers[id]); delete markers[id]; }
+    await loadStations(); await switchStation(); loadOverview();
+  } catch (err) { toast(err.message, true); }
+};
+
+(async function start() {
+  initCharts(); initMap();
+  try {
+    await loadStations();
+    if (!stations.length) { $('#liveTxt').textContent = 'Chưa có trạm – chạy seed_data.py hoặc tạo trạm mới'; return; }
+    await switchStation(); schedule();
+    loadOverview();
+    setInterval(loadOverview, 8000);
+    setInterval(tickAge, 1000);
+  } catch (e) { toast(e.message, true); $('#liveTxt').textContent = 'Lỗi kết nối CSDL'; }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giám sát thời tiết IoT · Cassandra</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:#f4f6f9; --card:#fff; --ink:#1c2433; --muted:#667085; --line:#e4e7ec;
+    --accent:#1d4ed8; --temp:#e4572e; --hum:#2e86ab; --pres:#4c9a2a; --bad:#d92d20; --ok:#12b76a;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:#0f1b33; color:#fff; padding:14px 24px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+  header h1 { margin:0; font-size:19px; font-weight:650; }
+  header small { color:#9fb0d0; display:block; font-weight:400; font-size:12.5px; }
+  .badges { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .badge { background:#1b2c52; border-radius:999px; padding:4px 12px; font-size:13px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#667085; margin-right:6px; }
+  .dot.live { background:var(--ok); box-shadow:0 0 0 0 rgba(18,183,106,.6); animation:pulse 1.6s infinite; }
+  @keyframes pulse { 70% { box-shadow:0 0 0 8px rgba(18,183,106,0);} 100% { box-shadow:0 0 0 0 rgba(18,183,106,0);} }
+  main { max-width:1280px; margin:0 auto; padding:18px 24px 40px; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:end; margin-bottom:16px; }
+  .toolbar label { display:flex; flex-direction:column; font-size:12.5px; color:var(--muted); gap:3px; }
+  select, input { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; color:var(--ink); }
+  button:hover { background:#f2f4f7; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary:hover { background:#1a43b8; }
+  button.danger { color:var(--bad); }
+  .grow { flex:1; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; margin-bottom:16px; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; border-left:5px solid var(--c); }
+  .kpi .lbl { color:var(--muted); font-size:13px; }
+  .kpi .val { font-size:32px; font-weight:700; line-height:1.15; }
+  .kpi .val span { font-size:15px; font-weight:500; color:var(--muted); margin-left:3px; }
+  .kpi .sub { font-size:12.5px; color:var(--muted); }
+  .kpi.alert { background:#fff4f2; border-color:#fecdca; }
+  .kpi.alert .val { color:var(--bad); }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:14px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card h2 { margin:0 0 8px; font-size:15px; }
+  .chartbox { position:relative; height:240px; }
+  .cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th, td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
+  th { color:var(--muted); font-weight:600; }
+  tbody tr.sel { background:#eef4ff; }
+  tbody tr.click { cursor:pointer; }
+  tbody tr.click:hover { background:#f5f8ff; }
+  .tag { padding:1px 8px; border-radius:999px; font-size:12px; background:#ecfdf3; color:#067647; }
+  .tag.off { background:#f2f4f7; color:#475467; }
+  .hint { color:var(--muted); font-size:12.5px; margin-top:8px; }
+  dialog { border:none; border-radius:14px; padding:20px 22px; width:min(460px,92vw); box-shadow:0 20px 60px rgba(16,24,40,.3); }
+  dialog::backdrop { background:rgba(15,27,51,.45); }
+  dialog h3 { margin:0 0 12px; }
+  .fld { display:flex; flex-direction:column; gap:3px; margin-bottom:10px; font-size:13px; color:var(--muted); }
+  .fld input { color:var(--ink); }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; align-items:end; }
+  .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+  #toast { position:fixed; right:18px; bottom:18px; background:#101828; color:#fff; padding:10px 16px; border-radius:10px; opacity:0; transform:translateY(8px); transition:.25s; pointer-events:none; max-width:420px; z-index:50; }
+  #toast.show { opacity:1; transform:none; }
+  #toast.err { background:var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hệ thống giám sát thời tiết IoT<small>Chuỗi thời gian trên Apache Cassandra (Astra DB) · môn NoSQL</small></h1>
+  <div class="badges">
+    <span class="badge"><span class="dot" id="dot"></span><span id="liveTxt">Đang tải…</span></span>
+    <span class="badge">Truy vấn: <b id="qms">–</b> ms</span>
+    <span class="badge">Số bản ghi: <b id="cnt">–</b></span>
+  </div>
+</header>
+
+<main>
+  <div class="toolbar">
+    <label>Trạm quan trắc
+      <select id="station" style="min-width:230px"></select>
+    </label>
+    <label>Khoảng thời gian
+      <select id="range">
+        <option value="30">30 phút qua</option>
+        <option value="60">1 giờ qua</option>
+        <option value="120" selected>2 giờ qua</option>
+        <option value="360">6 giờ qua</option>
+        <option value="720">12 giờ qua</option>
+        <option value="1440">24 giờ qua</option>
+      </select>
+    </label>
+    <label>Tự làm mới
+      <select id="auto">
+        <option value="2000" selected>Mỗi 2 giây</option>
+        <option value="5000">Mỗi 5 giây</option>
+        <option value="0">Tắt</option>
+      </select>
+    </label>
+    <div class="grow"></div>
+    <button id="btnNew" class="primary">+ Trạm mới</button>
+    <button id="btnLog">Ghi log thủ công</button>
+    <button id="btnCfg">Cấu hình cảm biến</button>
+    <button id="btnDel" class="danger">Xóa trạm</button>
+  </div>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="charts">
+    <div class="card"><h2>Nhiệt độ (°C)</h2><div class="chartbox"><canvas id="c_temperature"></canvas></div></div>
+    <div class="card"><h2>Độ ẩm (%)</h2><div class="chartbox"><canvas id="c_humidity"></canvas></div></div>
+    <div class="card"><h2>Áp suất (hPa)</h2><div class="chartbox"><canvas id="c_pressure"></canvas></div></div>
+  </section>
+
+  <section class="cols">
+    <div class="card">
+      <h2>10 bản ghi mới nhất của trạm</h2>
+      <table>
+        <thead><tr><th>Thời gian</th><th></th><th>Nhiệt độ</th><th>Độ ẩm</th><th>Áp suất</th></tr></thead>
+        <tbody id="tblLatest"></tbody>
+      </table>
+      <div class="hint">Đọc từ đầu partition (station_id, log_date) – bản ghi mới nhất nằm đầu nhờ CLUSTERING ORDER BY (ts DESC).</div>
+    </div>
+    <div class="card">
+      <h2>Tổng quan các trạm</h2>
+      <table>
+        <thead><tr><th>Mã</th><th>Trạm</th><th>°C</th><th>%</th><th>hPa</th></tr></thead>
+        <tbody id="tblOverview"></tbody>
+      </table>
+      <div class="hint">Bấm vào một dòng để chuyển sang trạm đó.</div>
+    </div>
+  </section>
+</main>
+
+<!-- Trạm mới -->
+<dialog id="dlgNew"><form method="dialog" id="fNew">
+  <h3>Tạo trạm quan trắc mới</h3>
+  <div class="row2">
+    <div class="fld">Mã trạm<input name="station_id" placeholder="ST11" required></div>
+    <div class="fld">Tên trạm<input name="name" placeholder="Trạm Quy Nhơn" required></div>
+  </div>
+  <div class="fld">Địa điểm<input name="location" placeholder="Bình Định"></div>
+  <div class="row2">
+    <div class="fld">Vĩ độ<input name="latitude" type="number" step="any" placeholder="13.7765"></div>
+    <div class="fld">Kinh độ<input name="longitude" type="number" step="any" placeholder="109.2237"></div>
+  </div>
+  <div class="actions"><button type="button" data-close>Hủy</button><button class="primary" type="submit">Tạo trạm</button></div>
+</form></dialog>
+
+<!-- Ghi log -->
+<dialog id="dlgLog"><form method="dialog" id="fLog">
+  <h3>Ghi nhận log đo</h3>
+  <div class="hint" style="margin:-6px 0 12px">Ghi một bản ghi tại thời điểm hiện tại cho trạm đang chọn.</div>
+  <div class="row3">
+    <div class="fld">Nhiệt độ (°C)<input name="temperature" type="number" step="any" required></div>
+    <div class="fld">Độ ẩm (%)<input name="humidity" type="number" step="any" required></div>
+    <div class="fld">Áp suất (hPa)<input name="pressure" type="number" step="any" required></div>
+  </div>
+  <div class="actions"><button type="button" data-close>Hủy</button><button class="primary" type="submit">Ghi log</button></div>
+</form></dialog>
+
+<!-- Cấu hình cảm biến -->
+<dialog id="dlgCfg"><form method="dialog" id="fCfg">
+  <h3>Cấu hình cảm biến</h3>
+  <div id="cfgBody"></div>
+  <div class="actions"><button type="button" data-close>Hủy</button><button class="primary" type="submit">Lưu cấu hình</button></div>
+</form></dialog>
+
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const METRICS = [
+  { key:'temperature', label:'Nhiệt độ', unit:'°C',  color:'#e4572e', dec:1 },
+  { key:'humidity',    label:'Độ ẩm',    unit:'%',   color:'#2e86ab', dec:1 },
+  { key:'pressure',    label:'Áp suất',  unit:'hPa', color:'#4c9a2a', dec:1 },
+];
+let charts = {}, sensors = {}, timer = null, busy = false, stations = [];
+
+async function api(url, opts = {}) {
+  if (opts.body && typeof opts.body !== 'string') {
+    opts = { ...opts, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opts.body) };
+  }
+  const r = await fetch(url, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function toast(msg, err = false) {
+  const t = $('#toast'); t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.className = '', 3200);
+}
+const fmtTime = iso => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
+const fmtFull = iso => new Date(iso).toLocaleString('vi-VN', { hour12: false });
+const cur = () => $('#station').value;
+
+/* ---------- biểu đồ ---------- */
+function initCharts() {
+  METRICS.forEach(m => {
+    charts[m.key] = new Chart($('#c_' + m.key), {
+      type: 'line',
+      data: { labels: [], datasets: [{ data: [], borderColor: m.color, backgroundColor: m.color + '22',
+                                       fill: true, tension: .3, pointRadius: 0, pointHoverRadius: 4, borderWidth: 2 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false },
+                   tooltip: { callbacks: { label: c => `${m.label}: ${c.parsed.y.toFixed(2)} ${m.unit}` } } },
+        scales: { x: { ticks: { maxTicksLimit: 8, maxRotation: 0 }, grid: { display: false } },
+                  y: { grace: '10%', ticks: { callback: v => v + ' ' + m.unit } } }
+      }
+    });
+  });
+}
+
+/* ---------- tải dữ liệu ---------- */
+async function loadStations(keep) {
+  stations = await api('/api/stations');
+  const sel = $('#station');
+  sel.innerHTML = stations.map(s => `<option value="${s.station_id}">${s.station_id} – ${s.name}</option>`).join('');
+  if (keep && stations.some(s => s.station_id === keep)) sel.value = keep;
+}
+async function loadSensors() {
+  if (!cur()) return;
+  const list = await api(`/api/stations/${cur()}/sensors`);
+  sensors = Object.fromEntries(list.map(s => [s.sensor_type, s]));
+}
+async function refresh() {
+  if (busy || !cur()) return;
+  busy = true;
+  try {
+    const d = await api(`/api/logs?station_id=${cur()}&minutes=${$('#range').value}`);
+    const labels = d.rows.map(r => fmtTime(r.ts));
+    METRICS.forEach(m => {
+      const c = charts[m.key];
+      c.data.labels = labels;
+      c.data.datasets[0].data = d.rows.map(r => r[m.key]);
+      c.update('none');
+    });
+    renderKpis(d);
+    $('#qms').textContent = d.query_ms;
+    $('#cnt').textContent = d.count;
+    $('#dot').className = 'dot live';
+    $('#liveTxt').textContent = 'Trực tuyến · ' + new Date().toLocaleTimeString('vi-VN', { hour12: false });
+    const latest = d.rows.slice(-10).reverse();
+    $('#tblLatest').innerHTML = latest.map(r => `<tr><td>${fmtFull(r.ts)}</td><td></td>
+      <td>${r.temperature.toFixed(1)} °C</td><td>${r.humidity.toFixed(1)} %</td><td>${r.pressure.toFixed(1)} hPa</td></tr>`).join('')
+      || '<tr><td colspan="5" style="text-align:center;color:#667085">Chưa có dữ liệu trong khoảng thời gian này</td></tr>';
+  } catch (e) {
+    $('#dot').className = 'dot'; $('#liveTxt').textContent = 'Lỗi kết nối';
+    toast(e.message, true);
+  } finally { busy = false; }
+}
+function renderKpis(d) {
+  const last = d.rows[d.rows.length - 1];
+  $('#kpis').innerHTML = METRICS.map(m => {
+    const v = last ? last[m.key] : null, st = d.stats[m.key], cfg = sensors[m.key];
+    const alert = v != null && cfg && (v < cfg.min_value || v > cfg.max_value);
+    const sub = st ? `Min ${st.min.toFixed(1)} · TB ${st.avg.toFixed(1)} · Max ${st.max.toFixed(1)}` : 'Chưa có dữ liệu';
+    const rng = cfg ? ` · Ngưỡng ${cfg.min_value}–${cfg.max_value}` : '';
+    return `<div class="kpi ${alert ? 'alert' : ''}" style="--c:${m.color}">
+      <div class="lbl">${m.label}${alert ? ' · ⚠ vượt ngưỡng' : ''}</div>
+      <div class="val">${v != null ? v.toFixed(m.dec) : '–'}<span>${m.unit}</span></div>
+      <div class="sub">${sub}${rng}</div></div>`;
+  }).join('');
+}
+async function loadOverview() {
+  try {
+    const list = await api('/api/overview');
+    $('#tblOverview').innerHTML = list.map(s => {
+      const l = s.latest;
+      return `<tr class="click ${s.station_id === cur() ? 'sel' : ''}" data-id="${s.station_id}">
+        <td>${s.station_id}</td><td>${s.name}</td>
+        <td>${l ? l.temperature.toFixed(1) : '–'}</td><td>${l ? l.humidity.toFixed(1) : '–'}</td><td>${l ? l.pressure.toFixed(0) : '–'}</td></tr>`;
+    }).join('');
+  } catch (e) { /* bỏ qua, lần sau thử lại */ }
+}
+
+/* ---------- điều khiển ---------- */
+function schedule() {
+  clearInterval(timer);
+  const ms = +$('#auto').value;
+  if (ms) timer = setInterval(refresh, ms);
+}
+async function switchStation() { await loadSensors(); await refresh(); loadOverview(); }
+
+$('#station').onchange = switchStation;
+$('#range').onchange = refresh;
+$('#auto').onchange = schedule;
+$('#tblOverview').onclick = e => {
+  const tr = e.target.closest('tr[data-id]'); if (!tr) return;
+  $('#station').value = tr.dataset.id; switchStation();
+};
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => b.closest('dialog').close());
+
+/* Trạm mới */
+$('#btnNew').onclick = () => { $('#fNew').reset(); $('#dlgNew').showModal(); };
+$('#fNew').onsubmit = async e => {
+  const body = Object.fromEntries(new FormData(e.target));
+  try {
+    const st = await api('/api/stations', { method: 'POST', body });
+    toast('Đã tạo trạm ' + st.station_id);
+    await loadStations(st.station_id); await switchStation();
+  } catch (err) { toast(err.message, true); }
+};
+/* Ghi log */
+$('#btnLog').onclick = () => { $('#fLog').reset(); $('#dlgLog').showModal(); };
+$('#fLog').onsubmit = async e => {
+  const body = { ...Object.fromEntries(new FormData(e.target)), station_id: cur() };
+  try { await api('/api/logs', { method: 'POST', body }); toast('Đã ghi log'); refresh(); }
+  catch (err) { toast(err.message, true); }
+};
+/* Cấu hình cảm biến */
+$('#btnCfg').onclick = async () => {
+  await loadSensors();
+  $('#cfgBody').innerHTML = METRICS.map(m => {
+    const c = sensors[m.key] || { min_value: '', max_value: '', interval_sec: 60, enabled: true };
+    return `<fieldset style="border:1px solid #e4e7ec;border-radius:10px;margin:0 0 10px;padding:8px 12px">
+      <legend style="color:${m.color};font-weight:600">${m.label} (${m.unit})</legend>
+      <div class="row3">
+        <div class="fld">Ngưỡng dưới<input data-k="${m.key}" data-f="min_value" type="number" step="any" value="${c.min_value}" required></div>
+        <div class="fld">Ngưỡng trên<input data-k="${m.key}" data-f="max_value" type="number" step="any" value="${c.max_value}" required></div>
+        <div class="fld">Chu kỳ (giây)<input data-k="${m.key}" data-f="interval_sec" type="number" min="1" value="${c.interval_sec}" required></div>
+      </div>
+      <label style="font-size:13px"><input data-k="${m.key}" data-f="enabled" type="checkbox" ${c.enabled ? 'checked' : ''}> Đang bật</label>
+    </fieldset>`;
+  }).join('');
+  $('#dlgCfg').showModal();
+};
+$('#fCfg').onsubmit = async e => {
+  try {
+    for (const m of METRICS) {
+      const g = f => document.querySelector(`[data-k="${m.key}"][data-f="${f}"]`);
+      await api(`/api/stations/${cur()}/sensors/${m.key}`, { method: 'PUT', body: {
+        min_value: g('min_value').value, max_value: g('max_value').value,
+        interval_sec: g('interval_sec').value, enabled: g('enabled').checked, unit: m.unit } });
+    }
+    toast('Đã lưu cấu hình cảm biến'); await loadSensors(); refresh();
+  } catch (err) { toast(err.message, true); }
+};
+/* Xóa trạm */
+$('#btnDel').onclick = async () => {
+  const id = cur(); if (!id) return;
+  if (!confirm(`Xóa trạm ${id} cùng cấu hình và log đo?`)) return;
+  try {
+    await api('/api/stations/' + id, { method: 'DELETE' });
+    toast('Đã xóa trạm ' + id); await loadStations(); await switchStation();
+  } catch (err) { toast(err.message, true); }
+};
+
+(async function start() {
+  initCharts();
+  try {
+    await loadStations();
+    if (!stations.length) { $('#liveTxt').textContent = 'Chưa có trạm – chạy seed_data.py hoặc tạo trạm mới'; return; }
+    await switchStation(); schedule();
+    setInterval(loadOverview, 10000);
+  } catch (e) { toast(e.message, true); $('#liveTxt').textContent = 'Lỗi kết nối CSDL'; }
+})();
+</script>
+</body>
+</html>
